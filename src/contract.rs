@@ -1,15 +1,22 @@
 #[cfg(not(feature = "library"))]
 use cosmwasm_std::entry_point;
-use cosmwasm_std::{to_binary, Binary, Deps, DepsMut, Env, MessageInfo, Response, StdResult};
+use cosmwasm_std::{to_binary, Binary, Deps, DepsMut, Env, MessageInfo, Response, StdResult, WasmMsg, SubMsg, Addr};
 use cw2::set_contract_version;
-
-use crate::error::ContractError;
-use crate::msg::{CountResponse, ExecuteMsg, InstantiateMsg, QueryMsg};
-use crate::state::{State, STATE};
+use sha3::{Digest, Keccak256};
+use muon_verify::{
+    types::{MuonRequestId, Bytes32, Bytes20, SchnorrSign},
+    msg::ExecuteMsg as MuonExecuteMsg
+};
+use crate::{
+    error::ContractError,
+    msg::{CountResponse, ExecuteMsg, InstantiateMsg, QueryMsg},
+    state::{State, STATE},
+};
 
 // version info for migration info
 const CONTRACT_NAME: &str = "crates.io:muon-cosmos-sample";
 const CONTRACT_VERSION: &str = env!("CARGO_PKG_VERSION");
+const MUON_CONTRACT_ADDRESS: &str = "wasm1euf4gstf0d8trlyuprxutxwcn9fjf2ha46de0rmk6k67ujautvvqnh9eqf";
 
 #[cfg_attr(not(feature = "library"), entry_point)]
 pub fn instantiate(
@@ -41,6 +48,7 @@ pub fn execute(
     match msg {
         ExecuteMsg::Increment {} => try_increment(deps),
         ExecuteMsg::Reset { count } => try_reset(deps, info, count),
+        ExecuteMsg::CallMuon {req_id, message, owner, nonce, sign} => try_muon_call(info, req_id, message, owner, nonce, sign),
     }
 }
 
@@ -62,6 +70,43 @@ pub fn try_reset(deps: DepsMut, info: MessageInfo, count: i32) -> Result<Respons
         Ok(state)
     })?;
     Ok(Response::new().add_attribute("method", "reset"))
+}
+
+pub fn try_muon_call(
+    info: MessageInfo,
+    req_id: MuonRequestId,
+    message: String,
+    address: Bytes20,
+    nonce: Bytes20,
+    signature: Bytes32,
+) -> Result<Response, ContractError> {
+    let hash = hash_string_message(message.clone())?;
+    let schnorr_sign = SchnorrSign { signature, address, nonce };
+    Ok(
+        Response::new()
+            .add_attribute("method", "muon_call")
+            .add_attribute("message", message)
+            .add_attribute("hash", hex::encode(hash.0))
+            .add_submessage(gen_muon_call_sub_msg(req_id, hash, schnorr_sign)?)
+    )
+}
+
+fn gen_muon_call_sub_msg(req_id: MuonRequestId, hash: Bytes32, sign: SchnorrSign) -> Result<SubMsg, ContractError> {
+    let msg = MuonExecuteMsg::VerifySignature { req_id, hash, sign };
+    let exec = WasmMsg::Execute {
+        contract_addr: MUON_CONTRACT_ADDRESS.to_string(),
+        msg: to_binary(&msg).unwrap(),
+        funds: vec![],
+    };
+    Ok(SubMsg::reply_on_success(exec, 0u64))
+}
+
+fn hash_string_message (message: String) -> Result<Bytes32, ContractError> {
+    let mut hasher = Keccak256::new();
+    hasher.update(message.as_bytes());
+    let result = hasher.finalize();
+    let bytes:[u8; 32] = array_ref!(&result, 0, 32).clone();
+    return Ok(bytes.into());
 }
 
 #[cfg_attr(not(feature = "library"), entry_point)]
@@ -144,5 +189,33 @@ mod tests {
         let res = query(deps.as_ref(), mock_env(), QueryMsg::GetCount {}).unwrap();
         let value: CountResponse = from_binary(&res).unwrap();
         assert_eq!(5, value.count);
+    }
+
+    #[test]
+    fn muon_call() {
+        let mut deps = mock_dependencies_with_balance(&coins(2, "token"));
+
+        let msg = InstantiateMsg { count: 17 };
+        let info = mock_info("creator", &coins(2, "token"));
+        let _res = instantiate(deps.as_mut(), mock_env(), info, msg).unwrap();
+
+        let msg = ExecuteMsg::CallMuon {
+            req_id: MuonRequestId::from(hex::decode("0170122020a3a823f77a2ebef3fa130a6ff9a776225abd47a8997916af73cfaa7126299b").unwrap()),
+            message: "message to sign with extra text".to_string(),
+            owner: Bytes20::from(hex::decode("F096EC73cB49B024f1D93eFe893E38337E7a099a").unwrap()),
+            nonce: Bytes20::from(hex::decode("2ed5948fe509d6fE65660B0EBA4A060BB5741Ee4").unwrap()),
+            sign: Bytes32::from(hex::decode("4203712623f3801693eff410948cd2a65f10a560c2bb6dfccc286820e26f04b5").unwrap()),
+        };
+        let info = mock_info("creator", &coins(2, "token"));
+        let _res = execute(deps.as_mut(), mock_env(), info, msg);
+
+//        assert!(_res.is_err());
+
+
+
+//        // should now be 5
+//        let res = query(deps.as_ref(), mock_env(), QueryMsg::GetCount {}).unwrap();
+//        let value: CountResponse = from_binary(&res).unwrap();
+//        assert_eq!(5, value.count);
     }
 }
