@@ -1,6 +1,6 @@
 #[cfg(not(feature = "library"))]
 use cosmwasm_std::entry_point;
-use cosmwasm_std::{to_binary, Binary, Deps, DepsMut, Env, MessageInfo, Response, StdResult, WasmMsg, SubMsg, Addr};
+use cosmwasm_std::{to_binary, Binary, Deps, DepsMut, Env, MessageInfo, Response, StdResult, WasmMsg, SubMsg, Addr, Reply};
 use cw2::set_contract_version;
 use sha3::{Digest, Keccak256};
 use muon_verify::{
@@ -98,7 +98,12 @@ fn gen_muon_call_sub_msg(req_id: MuonRequestId, hash: Bytes32, sign: SchnorrSign
         msg: to_binary(&msg).unwrap(),
         funds: vec![],
     };
-    Ok(SubMsg::reply_on_success(exec, 0u64))
+    Ok(SubMsg {
+        id: 0u64,
+        msg: cosmwasm_std::CosmosMsg::Wasm(exec),
+        reply_on: cosmwasm_std::ReplyOn::Never,
+        gas_limit: None,
+    })
 }
 
 fn hash_string_message (message: String) -> Result<Bytes32, ContractError> {
@@ -192,30 +197,28 @@ mod tests {
     }
 
     #[test]
-    fn muon_call() {
+    fn muon_verify() {
         let mut deps = mock_dependencies_with_balance(&coins(2, "token"));
 
         let msg = InstantiateMsg { count: 17 };
         let info = mock_info("creator", &coins(2, "token"));
         let _res = instantiate(deps.as_mut(), mock_env(), info, msg).unwrap();
 
+        // This transaction should be execute successfully
         let msg = ExecuteMsg::CallMuon {
             req_id: MuonRequestId::from(hex::decode("0170122020a3a823f77a2ebef3fa130a6ff9a776225abd47a8997916af73cfaa7126299b").unwrap()),
-            message: "message to sign with extra text".to_string(),
+            message: "message_to_sign".to_string(),
             owner: Bytes20::from(hex::decode("F096EC73cB49B024f1D93eFe893E38337E7a099a").unwrap()),
-            nonce: Bytes20::from(hex::decode("2ed5948fe509d6fE65660B0EBA4A060BB5741Ee4").unwrap()),
-            sign: Bytes32::from(hex::decode("4203712623f3801693eff410948cd2a65f10a560c2bb6dfccc286820e26f04b5").unwrap()),
+            nonce: Bytes20::from(hex::decode("36c44228F0F188019cC897dd0F089E7DA7fD493b").unwrap()),
+            sign: Bytes32::from(hex::decode("8c272ea27768074b8caa874772a7affc76c038a507d928e67e4307a2e48f2c4a").unwrap()),
         };
         let info = mock_info("creator", &coins(2, "token"));
-        let _res = execute(deps.as_mut(), mock_env(), info, msg);
+        let _res = execute(deps.as_mut(), mock_env(), info, msg).unwrap();
 
-//        assert!(_res.is_err());
-
-
-
-//        // should now be 5
-//        let res = query(deps.as_ref(), mock_env(), QueryMsg::GetCount {}).unwrap();
-//        let value: CountResponse = from_binary(&res).unwrap();
-//        assert_eq!(5, value.count);
+        println!("=========================== attributes =========================");
+        for attr in &_res.attributes {
+            println!("key: {}, value: {}", attr.key, attr.value)
+        }
+        assert_eq!(_res.attributes[0].value, "muon_call");
     }
 }
